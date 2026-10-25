@@ -1,6 +1,6 @@
 """LLM tools for the homeassistant integration."""
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from decimal import Decimal
 from enum import Enum
 from operator import attrgetter
@@ -35,7 +35,10 @@ from homeassistant.helpers.llm import (
     ToolInput,
     ToolResult,
 )
-from homeassistant.helpers.service import async_get_all_descriptions
+from homeassistant.helpers.service import (
+    async_get_all_descriptions,
+    async_prepare_call_from_config,
+)
 from homeassistant.helpers.template import Template
 from homeassistant.util import dt as dt_util, yaml as yaml_util
 from homeassistant.util.json import JsonObjectType
@@ -529,6 +532,19 @@ class SearchActionsTool(Tool):
         return ToolResult(data=result)
 
 
+def _templates(value: Any) -> Iterator[Template]:
+    """Yield the templates in a complex template."""
+    if isinstance(value, Template):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _templates(item)
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            yield from _templates(key)
+            yield from _templates(item)
+
+
 class CallActionTool(Tool):
     """Tool for calling an action."""
 
@@ -536,7 +552,8 @@ class CallActionTool(Tool):
     title = "Call action"
     description = (
         "Call a Home Assistant action and return its response, if the action has "
-        "one. Use homeassistant__search_actions to find the action and its fields."
+        "one. Use homeassistant__search_actions to find the action and its fields. "
+        "Values in target and data can be templates, as in a script."
     )
     integration = DOMAIN
     parameters = probatio.Schema(
@@ -570,17 +587,34 @@ class CallActionTool(Tool):
                 },
                 error=True,
             )
+        try:
+            config = cv.SERVICE_SCHEMA(args)
+        except probatio.Invalid as err:
+            return ToolResult(data={"error": str(err)}, error=True)
+        for template in _templates(config):
+            # Renders in a thread first, so a slow template cannot block the event loop.
+            try:
+                will_timeout = await template.async_render_will_timeout(
+                    TEMPLATE_RENDER_TIMEOUT
+                )
+            except TemplateError as err:
+                return ToolResult(data={"error": str(err)}, error=True)
+            if will_timeout:
+                return ToolResult(
+                    data={
+                        "error": "Template rendering exceeded the maximum time of "
+                        f"{TEMPLATE_RENDER_TIMEOUT} seconds"
+                    },
+                    error=True,
+                )
         return_response = (
             hass.services.supports_response(domain, action) is not SupportsResponse.NONE
         )
         try:
             response = await hass.services.async_call(
-                domain,
-                action,
-                args.get("data"),
+                **async_prepare_call_from_config(hass, config),
                 blocking=True,
                 context=llm_context.context,
-                target=args.get("target"),
                 return_response=return_response,
             )
         except (HomeAssistantError, probatio.Invalid) as err:

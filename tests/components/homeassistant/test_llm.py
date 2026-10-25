@@ -279,7 +279,70 @@ async def test_call_action(
     )
     assert response == llm.ToolResult(data=expected)
     assert len(calls) == 1
-    assert calls[0].data == {"entity_id": ENTITY_ID, "value": 1}
+    assert calls[0].data == {"entity_id": [ENTITY_ID], "value": 1}
+
+
+async def test_call_action_template(hass: HomeAssistant) -> None:
+    """Test the call action tool renders templates in the target and data."""
+    calls: list[ServiceCall] = []
+    hass.services.async_register("test", "action", calls.append)
+    response = await _async_call_tool(
+        hass,
+        CALL_ACTION_TOOL,
+        {
+            "action": "test.action",
+            "target": {"entity_id": "{{ 'light.' ~ 'kitchen' }}"},
+            "data": {"value": "{{ 1 + 1 }}", "state": "{{ states('light.kitchen') }}"},
+        },
+    )
+    assert response == llm.ToolResult(data={"success": True})
+    assert len(calls) == 1
+    assert calls[0].data == {"entity_id": [ENTITY_ID], "value": 2, "state": "on"}
+
+
+@pytest.mark.parametrize(
+    "tool_args",
+    [
+        pytest.param(
+            {"action": "test.action", "data": {"value": "{{ 1 / 0 }}"}},
+            id="template_error",
+        ),
+        pytest.param(
+            {"action": "test.action", "target": {"invalid": "value"}},
+            id="invalid_target",
+        ),
+    ],
+)
+async def test_call_action_invalid(
+    hass: HomeAssistant, tool_args: dict[str, Any]
+) -> None:
+    """Test the call action tool reports an invalid target or template."""
+    calls: list[ServiceCall] = []
+    hass.services.async_register("test", "action", calls.append)
+    response = await _async_call_tool(hass, CALL_ACTION_TOOL, tool_args)
+    assert response.error is True
+    assert response.data["error"]
+    assert not calls
+
+
+async def test_call_action_template_timeout(hass: HomeAssistant) -> None:
+    """Test the call action tool reports a template that renders too slowly."""
+    calls: list[ServiceCall] = []
+    hass.services.async_register("test", "action", calls.append)
+    with patch(
+        "homeassistant.components.homeassistant.llm.Template.async_render_will_timeout",
+        return_value=True,
+    ):
+        response = await _async_call_tool(
+            hass,
+            CALL_ACTION_TOOL,
+            {"action": "test.action", "data": {"key": {"{{ 'a' }}": "b"}}},
+        )
+    assert response == llm.ToolResult(
+        data={"error": "Template rendering exceeded the maximum time of 3 seconds"},
+        error=True,
+    )
+    assert not calls
 
 
 async def test_call_action_unknown(hass: HomeAssistant) -> None:

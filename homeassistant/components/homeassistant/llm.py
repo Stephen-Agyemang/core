@@ -595,7 +595,7 @@ class CallActionTool(Tool):
             # Renders in a thread first, so a slow template cannot block the event loop.
             try:
                 will_timeout = await template.async_render_will_timeout(
-                    TEMPLATE_RENDER_TIMEOUT
+                    TEMPLATE_RENDER_TIMEOUT, strict=True
                 )
             except TemplateError as err:
                 return ToolResult(data={"error": str(err)}, error=True)

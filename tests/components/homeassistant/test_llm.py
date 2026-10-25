@@ -308,6 +308,10 @@ async def test_call_action_template(hass: HomeAssistant) -> None:
             id="template_error",
         ),
         pytest.param(
+            {"action": "test.action", "data": {"value": "{{ missing }}"}},
+            id="undefined_variable",
+        ),
+        pytest.param(
             {"action": "test.action", "target": {"invalid": "value"}},
             id="invalid_target",
         ),
